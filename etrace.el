@@ -22,6 +22,11 @@
 
 (defvar etrace--trace nil "Trace events")
 
+(defcustom etrace-min-duration-us 200
+  "Minimum function call duration in microseconds to include in trace.
+Calls shorter than this, and any calls made within them, are excluded."
+  :type 'natnum)
+
 (defun etrace--make-wrapper-advice (orig funsym)
   "Advice to make the piece of advice that instruments FUNSYM."
   (let ((elp-wrapper (funcall orig funsym)))
@@ -29,11 +34,17 @@
       "This function has been instrumented for profiling by the ELP.
 ELP is the Emacs Lisp Profiler. To restore the function to its
 original definition, use \\[elp-restore-function] or \\[elp-restore-all]."
-      (let ((result))
-        (push (list ?B funsym (current-time) (when etrace-collect-args args)) etrace--trace)
+      (let ((trace-before etrace--trace)
+            (t-before (current-time))
+            (result))
+        (push (list ?B funsym t-before (when etrace-collect-args args)) etrace--trace)
         (unwind-protect
             (setq result (apply elp-wrapper func args))
-          (push (list ?E funsym (current-time) nil) etrace--trace))
+          (let* ((t-after (current-time))
+                 (duration-us (truncate (* 1e6 (float-time (time-subtract t-after t-before))))))
+            (if (>= duration-us etrace-min-duration-us)
+                (push (list ?E funsym t-after nil) etrace--trace)
+              (setq etrace--trace trace-before))))
         result))))
 
 (advice-add #'elp--make-wrapper :around #'etrace--make-wrapper-advice)
@@ -46,6 +57,7 @@ original definition, use \\[elp-restore-function] or \\[elp-restore-all]."
 (defun etrace-write ()
   "Write out trace to etrace-output-file then clear the current trace variable"
   (interactive)
+
   (save-window-excursion
     (save-excursion
       (find-file-literally etrace-output-file)
@@ -65,7 +77,7 @@ original definition, use \\[elp-restore-function] or \\[elp-restore-all]."
            (format
             "{\"name\":\"%s\",\"cat\":\"\",\"ph\":\"%c\",\"ts\":%d,\"pid\":0,\"tid\":0,\"args\":%s}\n"
             (nth 1 ev) (nth 0 ev)
-            (truncate (* 1000000 (- (float-time (nth 2 ev)) start-time)))
+            (truncate (* 1e6 (- (float-time (nth 2 ev)) start-time)))
             (let ((ev-args (nth 3 ev)))
               (if ev-args
                   (json-encode
