@@ -16,6 +16,10 @@
   "When calling etrace-write, write the trace to this file."
   :type 'file)
 
+(defcustom etrace-collect-args nil
+  "Collect function call arguments."
+  :type 'boolean)
+
 (defvar etrace--trace nil "Trace events")
 
 (defun etrace--make-wrapper-advice (orig funsym)
@@ -23,13 +27,13 @@
   (let ((elp-wrapper (funcall orig funsym)))
     (lambda (func &rest args)
       "This function has been instrumented for profiling by the ELP.
-ELP is the Emacs Lisp Profiler.  To restore the function to its
+ELP is the Emacs Lisp Profiler. To restore the function to its
 original definition, use \\[elp-restore-function] or \\[elp-restore-all]."
       (let ((result))
-        (push (list ?B funsym (current-time)) etrace--trace)
+        (push (list ?B funsym (current-time) (when etrace-collect-args args)) etrace--trace)
         (unwind-protect
             (setq result (apply elp-wrapper func args))
-          (push (list ?E funsym (current-time)) etrace--trace))
+          (push (list ?E funsym (current-time) nil) etrace--trace))
         result))))
 
 (advice-add #'elp--make-wrapper :around #'etrace--make-wrapper-advice)
@@ -59,8 +63,17 @@ original definition, use \\[elp-restore-function] or \\[elp-restore-all]."
           ;; compact JSON but without everything being on one line.
           (insert
            (format
-            "{\"name\":\"%s\",\"cat\":\"\",\"ph\":\"%c\",\"ts\":%d,\"pid\":0,\"tid\":0,\"args\":{}}\n"
-            (nth 1 ev) (nth 0 ev) (truncate (* 1000000 (- (float-time (nth 2 ev)) start-time))))))
+            "{\"name\":\"%s\",\"cat\":\"\",\"ph\":\"%c\",\"ts\":%d,\"pid\":0,\"tid\":0,\"args\":%s}\n"
+            (nth 1 ev) (nth 0 ev)
+            (truncate (* 1000000 (- (float-time (nth 2 ev)) start-time)))
+            (let ((ev-args (nth 3 ev)))
+              (if ev-args
+                  (json-encode
+                   (cl-loop for i from 0
+                            for arg in ev-args
+                            collect (cons (format "arg%d" i)
+                                          (format "%S" arg))))
+                "{}")))))
         (insert "]")
         (save-buffer))))
   (message "Wrote trace to etrace-output-file (%s)!" etrace-output-file)
